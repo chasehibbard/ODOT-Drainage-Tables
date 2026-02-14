@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ODOT Drainage Tables Generator</title>
+
+    <!-- SheetJS for reading Excel files -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+    <!-- ExcelJS for writing formatted Excel files -->
+    <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: #f0f2f5;
+            color: #333;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.1);
+            padding: 40px;
+            max-width: 640px;
+            width: 100%;
+        }
+
+        h1 {
+            font-size: 22px;
+            color: #1a1a2e;
+            margin-bottom: 6px;
+            text-align: center;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 30px;
+        }
+
+        .file-group {
+            margin-bottom: 20px;
+        }
+
+        .file-group label {
+            display: block;
+            font-weight: 600;
+            font-size: 14px;
+            margin-bottom: 6px;
+            color: #444;
+        }
+
+        .file-group .hint {
+            font-size: 12px;
+            color: #888;
+            margin-bottom: 8px;
+        }
+
+        .file-input-wrapper {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .file-name {
+            flex: 1;
+            padding: 10px 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 13px;
+            color: #666;
+            background: #fafafa;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .file-name.has-file {
+            color: #2d6a4f;
+            background: #f0faf4;
+            border-color: #b7e4c7;
+        }
+
+        .browse-btn {
+            padding: 10px 16px;
+            background: #e9ecef;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+
+        .browse-btn:hover {
+            background: #dee2e6;
+        }
+
+        input[type="file"] { display: none; }
+
+        .generate-btn {
+            display: block;
+            width: 100%;
+            padding: 14px;
+            background: #2d6a4f;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 28px;
+            transition: background 0.2s;
+        }
+
+        .generate-btn:hover { background: #1b4332; }
+        .generate-btn:disabled {
+            background: #adb5bd;
+            cursor: not-allowed;
+        }
+
+        .status {
+            text-align: center;
+            margin-top: 16px;
+            font-size: 14px;
+            min-height: 20px;
+        }
+
+        .status.info { color: #0077b6; }
+        .status.success { color: #2d6a4f; }
+        .status.error { color: #d00; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>ODOT Drainage Tables Generator</h1>
+    <p class="subtitle">Select your OpenRoads Designer export files below</p>
+
+    <div class="file-group">
+        <label>DA Summary Table</label>
+        <div class="hint">OKDOT_Drainage Areas Summary Table.xlsx</div>
+        <div class="file-input-wrapper">
+            <div class="file-name" id="da-name">No file selected</div>
+            <button class="browse-btn" onclick="document.getElementById('da-input').click()">Browse...</button>
+            <input type="file" id="da-input" accept=".xlsx,.xls,.csv" onchange="handleFile(this, 'da')">
+        </div>
+    </div>
+
+    <div class="file-group">
+        <label>Inlets Table</label>
+        <div class="hint">OKDOT_Inlets for Storm Sewer Design Record.xlsx</div>
+        <div class="file-input-wrapper">
+            <div class="file-name" id="inlet-name">No file selected</div>
+            <button class="browse-btn" onclick="document.getElementById('inlet-input').click()">Browse...</button>
+            <input type="file" id="inlet-input" accept=".xlsx,.xls,.csv" onchange="handleFile(this, 'inlet')">
+        </div>
+    </div>
+
+    <button class="generate-btn" onclick="generate()">Generate ODOT Tables</button>
+    <div class="status" id="status"></div>
+</div>
+
+<script>
+// ============================================================
+// State — holds the raw file data after user selects files
+// ============================================================
+const state = { daFile: null, inletFile: null };
+
+function handleFile(input, type) {
+    const file = input.files[0];
+    if (!file) return;
+
+    const nameEl = document.getElementById(type === 'da' ? 'da-name' : 'inlet-name');
+    nameEl.textContent = file.name;
+    nameEl.classList.add('has-file');
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        if (type === 'da') state.daFile = new Uint8Array(e.target.result);
+        else state.inletFile = new Uint8Array(e.target.result);
+    };
+    reader.readAsArrayBuffer(file);
+}
+
+function setStatus(msg, type) {
+    const el = document.getElementById('status');
+    el.textContent = msg;
+    el.className = 'status ' + type;
+}
+
+// ============================================================
+// Parser — reads raw OpenRoads exports using SheetJS
+// ============================================================
+
+function findColumn(headers, targetPhrases) {
+    for (let i = 0; i < headers.length; i++) {
+        const h = (headers[i] || '').toUpperCase();
+        for (const phrase of targetPhrases) {
+            if (h.includes(phrase)) return i;
+        }
+    }
+    return -1;
+}
+
+function parseSheet(fileData) {
+    const wb = XLSX.read(fileData, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    return XLSX.utils.sheet_to_json(ws, { header: 1 });
+}
+
+function parseDASummary(fileData) {
+    const rows = parseSheet(fileData);
+    if (rows.length < 2) return [];
+
+    const headers = rows[0].map(h => String(h || '').trim());
+
+    const colMap = {
+        designation: findColumn(headers, ['DRAINAGE AREA DESIGNATION']),
+        outflow_structure: findColumn(headers, ['OUTFLOW STRUCTURE']),
+        area_acres: findColumn(headers, ['DRAINAGE AREA (ACRE', 'DRAINAGE AREA(ACRE']),
+        tc_min: findColumn(headers, ['TIME OF CONCENTRATION']),
+        runoff_coeff: findColumn(headers, ['RUNOFF COEFFICIENT']),
+        intensity: findColumn(headers, ['CATCHMENT INTENSITY', 'INTENSITY']),
+        flow_cfs: findColumn(headers, ['CATCHMENT RATIONAL FLOW', 'RATIONAL FLOW']),
+    };
+
+    const data = [];
+    for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        if (!row || row[0] == null) continue;
+
+        const record = {};
+        for (const [key, idx] of Object.entries(colMap)) {
+            if (idx >= 0) record[key] = row[idx] ?? null;
+        }
+        data.push(record);
+    }
+    return data;
+}
+
+function parseInlets(fileData) {
+    const rows = parseSheet(fileData);
+    if (rows.length < 2) return [];
+
+    const headers = rows[0].map(h => String(h || '').trim());
+
+    const colMap = {
+        structure_no: findColumn(headers, ['STRUCTURE NO']),
+        alignment: findColumn(headers, ['ALIGNMENT']),
+        station: findColumn(headers, ['STATION']),
+        offset: findColumn(headers, ['OFFSET']),
+        structure_type: findColumn(headers, ['STRUCTURE TYPE']),
+        description: findColumn(headers, ['DESCRIPTION']),
+        elevation_rim: findColumn(headers, ['ELEVATION (RIM)', 'ELEVATION']),
+        flow_captured: findColumn(headers, ['FLOW (CAPTURED)', 'CAPTURED']),
+        flow_bypassed_rational: findColumn(headers, ['BYPASSED RATIONAL']),
+        flow_total_bypassed: findColumn(headers, ['TOTAL BYPASSED']),
+        capture_efficiency: findColumn(headers, ['CAPTURE EFFICIENCY']),
+        max_spread: findColumn(headers, ['SPREAD']),
+        hgl_out: findColumn(headers, ['HYDRAULIC GRADE']),
+        egl_out: findColumn(headers, ['ENERGY GRADE']),
+        bypass_target: findColumn(headers, ['BYPASS TARGET']),
+    };
+
+    const data = [];
+    for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        if (!row || row[0] == null) continue;
+
+        const record = {};
+        for (const [key, idx] of Object.entries(colMap)) {
+            if (idx >= 0) record[key] = row[idx] ?? null;
+        }
+        data.push(record);
+    }
+    return data;
+}
+
+// ============================================================
+// Helpers
+// ============================================================
+
+function extractInletType(description) {
+    if (!description) return '';
+    const parts = String(description).split('\\');
+    return parts[parts.length - 1].trim();
+}
+
+function formatStationOffset(station, offset) {
+    const parts = [];
+    if (station != null) parts.push(String(station));
+    if (offset != null && offset !== 0) parts.push('Offset: ' + offset);
+    return parts.join(', ');
+}
+
+// Common formatting constants for ExcelJS
+const THIN_BORDER = { style: 'thin' };
+const ALL_BORDERS = {
+    top: THIN_BORDER, bottom: THIN_BORDER,
+    left: THIN_BORDER, right: THIN_BORDER
+};
+const HEADER_FONT = { name: 'Arial', size: 10 };
+const DATA_FONT = { name: 'Arial', size: 10 };
+const CENTER_WRAP = { horizontal: 'center', vertical: 'middle', wrapText: true };
+const CENTER = { horizontal: 'center', vertical: 'middle' };
+
+// ============================================================
+// DA Summary Sheet Builder
+// ============================================================
+
+function buildDASummarySheet(wb, daData) {
+    const ws = wb.addWorksheet('Drainage Area Summary');
+
+    // Column widths
+    const widths = [15.55, 11.55, 10.33, 10.89, 13, 13, 13, 13, 13, 13, 13, 13];
+    widths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+
+    // Row 1: blank
+    // Row 2: Title
+    ws.mergeCells('A2:L2');
+    const titleCell = ws.getCell('A2');
+    titleCell.value = 'DRAINAGE AREA SUMMARY';
+    titleCell.font = HEADER_FONT;
+    titleCell.alignment = CENTER_WRAP;
+    titleCell.border = { top: THIN_BORDER };
+    ws.getRow(2).height = 15.75;
+
+    // Row 3: Primary headers
+    ws.getRow(3).height = 18.75;
+
+    // Single-cell headers spanning rows 3-4
+    const singleHeaders = [
+        ['A', 'DRAINAGE AREA DESIGNATION'],
+        ['B', 'DRAINAGE AREA (ACRE)'],
+        ['C', 'TOTAL TC (MIN)'],
+        ['D', 'RUNOFF COEFF. "C"'],
+    ];
+
+    singleHeaders.forEach(([col, text]) => {
+        ws.mergeCells(`${col}3:${col}4`);
+        const cell = ws.getCell(`${col}3`);
+        cell.value = text;
+        cell.font = HEADER_FONT;
+        cell.alignment = CENTER_WRAP;
+        cell.border = ALL_BORDERS;
+    });
+
+    // Grouped header: RAINFALL INTENSITY
+    ws.mergeCells('E3:H3');
+    const riCell = ws.getCell('E3');
+    riCell.value = 'RAINFALL INTENSITY (IN/HR)';
+    riCell.font = HEADER_FONT;
+    riCell.alignment = CENTER_WRAP;
+    riCell.border = ALL_BORDERS;
+
+    // Grouped header: PEAK FLOW
+    ws.mergeCells('I3:L3');
+    const pfCell = ws.getCell('I3');
+    pfCell.value = 'PEAK FLOW (CFS)';
+    pfCell.font = HEADER_FONT;
+    pfCell.alignment = CENTER_WRAP;
+    pfCell.border = ALL_BORDERS;
+
+    // Row 4: Sub-headers
+    ws.getRow(4).height = 24.75;
+    const subHeaders = ['10 YEAR', '25 YEAR', '50 YEAR', '100 YEAR'];
+
+    // Under Rainfall Intensity (cols E-H = 5-8)
+    subHeaders.forEach((text, i) => {
+        const cell = ws.getCell(4, 5 + i);
+        cell.value = text;
+        cell.font = HEADER_FONT;
+        cell.alignment = CENTER_WRAP;
+        cell.border = ALL_BORDERS;
+    });
+
+    // Under Peak Flow (cols I-L = 9-12)
+    subHeaders.forEach((text, i) => {
+        const cell = ws.getCell(4, 9 + i);
+        cell.value = text;
+        cell.font = HEADER_FONT;
+        cell.alignment = CENTER_WRAP;
+        cell.border = ALL_BORDERS;
+    });
+
+    // Data rows
+    daData.forEach((rec, idx) => {
+        const r = 5 + idx;
+        ws.getRow(r).height = 15.75;
+
+        const vals = [
+            rec.designation,    // A
+            rec.area_acres,     // B
+            rec.tc_min,         // C
+            rec.runoff_coeff,   // D
+            rec.intensity,      // E (10-yr)
+            null,               // F (25-yr — blank)
+            null,               // G (50-yr — blank)
+            null,               // H (100-yr — blank)
+            rec.flow_cfs,       // I (10-yr)
+            null,               // J (25-yr — blank)
+            null,               // K (50-yr — blank)
+            null,               // L (100-yr — blank)
+        ];
+
+        vals.forEach((val, i) => {
+            const cell = ws.getCell(r, i + 1);
+            cell.value = val;
+            cell.font = DATA_FONT;
+            cell.alignment = CENTER;
+            cell.border = ALL_BORDERS;
+        });
+    });
+
+    return ws;
+}
+
+// ============================================================
+// Inlet Design Record Sheet Builder
+// ============================================================
+
+const INLET_COLUMNS = [
+    // [colNum, header, width, rotated]
+    [2, 'STRUCTURE NUMBER', 10.44, true],
+    [3, 'ALIGNMENT', 6, true],
+    [4, 'STATION, OFFSET', 16.11, false],
+    [5, 'INLET TYPE', 14.33, false],
+    [6, 'DESCRIPTION', 16.55, false],
+    [7, 'DESIGN YEAR', 8.33, false],
+    [8, 'DRAINAGE AREA', 8.11, true],
+    [9, 'AREA (ACRE)', 5.89, true],
+    [10, 'C VALUE', 13, true],
+    [11, 'Tc (MINUTES)', 5.66, true],
+    [12, 'INTENSITY (IN/HR)', 6, true],
+    [13, ' FLOW RATE INITIAL (Qi) (CFS)', 5.66, true],
+    [14, 'GRADE "SL" (ft/ft)', 6.33, true],
+    [15, 'CROSS SLOPE "Sx" (ft/ft)', 5.89, true],
+    [16, 'CARRY OVER (CFS)', 6, true],
+    [17, 'SUM Q AT INLETS (CFS)', 5.44, true],
+    [18, 'DEPTH AT INLET (FT)', 7.33, true],
+    [19, 'SPREAD AT INLET (FT)', 7.33, true],
+    [20, 'BYPASS(CFS)', 13, true],
+    [21, 'BYPASS TO INLET', 6.33, true],
+    [22, 'COMMENTS', 23.44, false],
+];
+
+function buildInletSheet(wb, inletData, daData) {
+    const ws = wb.addWorksheet('Inlets');
+
+    // Column widths
+    ws.getColumn(1).width = 4.44;
+    INLET_COLUMNS.forEach(([colNum, , width]) => {
+        ws.getColumn(colNum).width = width;
+    });
+
+    // Row 1: Title
+    ws.getRow(1).height = 16.5;
+    ws.mergeCells('B1:V1');
+    const titleCell = ws.getCell('B1');
+    titleCell.value = 'DRAINAGE STRUCTURE DESIGN RECORD - INLETS';
+    titleCell.font = HEADER_FONT;
+    titleCell.alignment = CENTER_WRAP;
+
+    // Rows 2-4: Headers (each column header merged across rows 2-4)
+    ws.getRow(2).height = 80.25;
+    ws.getRow(3).height = 18.75;
+    ws.getRow(4).height = 27;
+
+    INLET_COLUMNS.forEach(([colNum, header, , rotated]) => {
+        const colLetter = colNumToLetter(colNum);
+        ws.mergeCells(`${colLetter}2:${colLetter}4`);
+        const cell = ws.getCell(`${colLetter}2`);
+        cell.value = header;
+        cell.font = HEADER_FONT;
+        cell.alignment = rotated
+            ? { horizontal: 'center', vertical: 'middle', wrapText: true, textRotation: 90 }
+            : CENTER_WRAP;
+        cell.border = ALL_BORDERS;
+    });
+
+    // Build DA lookup by outflow structure
+    const daByOutflow = {};
+    if (daData) {
+        daData.forEach(da => {
+            const outflow = da.outflow_structure;
+            if (outflow) daByOutflow[String(outflow).trim()] = da;
+        });
+    }
+
+    // Data rows
+    const dataStart = 5;
+    const dataEnd = dataStart + inletData.length - 1;
+
+    // "PROPOSED" label in column A, merged down all data rows
+    if (inletData.length > 0) {
+        if (inletData.length > 1) {
+            ws.mergeCells(`A${dataStart}:A${dataEnd}`);
+        }
+        const aCell = ws.getCell(`A${dataStart}`);
+        aCell.value = 'PROPOSED';
+        aCell.font = { name: 'Calibri', size: 10 };
+        aCell.alignment = { horizontal: 'center', vertical: 'middle', textRotation: 90 };
+        aCell.border = { top: THIN_BORDER };
+    }
+
+    inletData.forEach((rec, idx) => {
+        const r = dataStart + idx;
+        ws.getRow(r).height = 15.75;
+
+        const structNo = rec.structure_no || '';
+        const daRec = daByOutflow[structNo] || null;
+
+        const captured = rec.flow_captured || 0;
+        const bypassed = rec.flow_total_bypassed || 0;
+        const sumQ = (captured || bypassed) ? captured + bypassed : null;
+
+        const vals = [
+            // colNum, value
+            [2, structNo],
+            [3, rec.alignment],
+            [4, formatStationOffset(rec.station, rec.offset)],
+            [5, extractInletType(rec.description)],
+            [6, rec.structure_type],
+            [7, null],                                          // Design Year
+            [8, daRec ? daRec.designation : null],              // Drainage Area
+            [9, daRec ? daRec.area_acres : null],               // Area (Acre)
+            [10, daRec ? daRec.runoff_coeff : null],            // C Value
+            [11, daRec ? daRec.tc_min : null],                  // Tc
+            [12, daRec ? daRec.intensity : null],               // Intensity
+            [13, rec.flow_captured],                            // Flow Rate Initial Qi
+            [14, null],                                          // Grade SL
+            [15, null],                                          // Cross Slope Sx
+            [16, rec.flow_total_bypassed],                      // Carry Over
+            [17, sumQ],                                          // Sum Q at Inlets
+            [18, null],                                          // Depth at Inlet
+            [19, rec.max_spread],                               // Spread at Inlet
+            [20, rec.flow_bypassed_rational],                   // Bypass (CFS)
+            [21, rec.bypass_target],                            // Bypass To Inlet
+            [22, null],                                          // Comments
+        ];
+
+        vals.forEach(([colNum, val]) => {
+            const cell = ws.getCell(r, colNum);
+            cell.value = val;
+            cell.font = DATA_FONT;
+            cell.alignment = CENTER;
+            cell.border = ALL_BORDERS;
+        });
+    });
+
+    return ws;
+}
+
+function colNumToLetter(n) {
+    let s = '';
+    while (n > 0) {
+        n--;
+        s = String.fromCharCode(65 + (n % 26)) + s;
+        n = Math.floor(n / 26);
+    }
+    return s;
+}
+
+// ============================================================
+// Main generate function
+// ============================================================
+
+async function generate() {
+    if (!state.daFile && !state.inletFile) {
+        alert('Please select at least one input file.');
+        return;
+    }
+
+    setStatus('Processing...', 'info');
+
+    try {
+        let daData = [];
+        let inletData = [];
+
+        if (state.daFile) {
+            daData = parseDASummary(state.daFile);
+            setStatus(`Read ${daData.length} drainage areas...`, 'info');
+        }
+
+        if (state.inletFile) {
+            inletData = parseInlets(state.inletFile);
+            setStatus(`Read ${inletData.length} inlets...`, 'info');
+        }
+
+        // Build output workbook with ExcelJS
+        const wb = new ExcelJS.Workbook();
+
+        if (daData.length > 0) {
+            buildDASummarySheet(wb, daData);
+        }
+
+        if (inletData.length > 0) {
+            buildInletSheet(wb, inletData, daData.length > 0 ? daData : null);
+        }
+
+        // Generate and download the file
+        const buffer = await wb.xlsx.writeBuffer();
+        const blob = new Blob([buffer], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        });
+
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = 'ODOT_Drainage_Tables.xlsx';
+        link.click();
+        URL.revokeObjectURL(link.href);
+
+        setStatus(
+            `Done! Generated ${daData.length} DA records and ${inletData.length} inlet records.`,
+            'success'
+        );
+
+    } catch (err) {
+        setStatus('Error: ' + err.message, 'error');
+        console.error(err);
+    }
+}
+</script>
+
+</body>
+</html>
